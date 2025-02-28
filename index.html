@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en-us">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <title>Unity Web Player | SampleEndlessRunnerGame</title>
+    <link rel="shortcut icon" href="TemplateData/favicon.ico">
+    <link rel="stylesheet" href="TemplateData/style.css">
+    <script type="module">
+      import { initializeApp } from "https://www.gstatic.com/firebasejs/11.3.1/firebase-app.js";
+      import { getAuth, createUserWithEmailAndPassword, updateProfile, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.3.1/firebase-auth.js";
+      import { getFirestore, setDoc, getDoc, doc, collection, getDocs } from "https://www.gstatic.com/firebasejs/11.3.1/firebase-firestore.js";
+    
+      const firebaseConfig = {
+        apiKey: "AIzaSyABw5EIum3ExkmzciO-6w-psTEH6YKBoUw",
+        authDomain: "cyeraendless.firebaseapp.com",
+        projectId: "cyeraendless",
+        storageBucket: "cyeraendless.firebasestorage.app",
+        messagingSenderId: "380895477284",
+        appId: "1:380895477284:web:b8a009a505dbcb8d61e2b1"
+      };
+    
+      const app = initializeApp(firebaseConfig);
+      const auth = getAuth(app);
+      const db = getFirestore(app);
+    
+      console.log("Firebase Initialized:", app);
+
+      // Check login state on page load
+      window.checkLoginState = function() {
+        onAuthStateChanged(auth, async (user) => {
+          if (user) {
+            console.log("User is already logged in:", user);
+            const userDoc = await getDoc(doc(db, "users", user.uid));
+            if (userDoc.exists()) {
+              const playerData = userDoc.data();
+              console.log("User data retrieved on page load:", playerData);
+              SendMessageToUnity("LoginManager", "OnLoginSuccess", JSON.stringify({
+                userId: user.uid,
+                playerData: JSON.stringify(playerData)
+              }));
+            } else {
+              console.error("No user data found for logged-in user!");
+              // SendMessageToUnity("LoginManager", "OnLoginError", "User data not found.");
+            }
+          } else {
+            console.log("No user logged in on page load.");
+            SendMessageToUnity("LoginManager", "OnLoginStateChecked", "No user logged in.");
+          }
+        });
+      };
+    
+      window.signUp = async function(email, password, username, playerDataJson) {
+        try {
+          const usernameDoc = await getDoc(doc(db, "usernames", username));
+          if (usernameDoc.exists()) {
+            console.error("Username already taken!");
+            SendMessageToUnity("LoginManager", "OnSignUpError", "Username already taken.");
+            return;
+          }
+
+          const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+          const user = userCredential.user;
+          
+          await updateProfile(user, { displayName: username });
+
+          let initialData;
+          try {
+            initialData = JSON.parse(playerDataJson) || { coins: 0, maxScore: 0, highscore: 0, missions: [] };
+            console.log("Parsed playerDataJson on signup:", initialData);
+          } catch (parseError) {
+            console.error("Error parsing playerDataJson:", parseError);
+            initialData = { coins: 0, maxScore: 0, highscore: 0, missions: [] };
+          }
+
+          const firebaseData = {
+            coins: initialData.coins || 0,
+            maxScore: initialData.maxScore || 0,
+            highscore: initialData.highscore || 0,
+            username: username,
+            missions: Array.isArray(initialData.missions) ? initialData.missions : []
+          };
+          console.log("Saving to Firebase on signup:", firebaseData);
+
+          await setDoc(doc(db, "users", user.uid), firebaseData);
+          await setDoc(doc(db, "usernames", username), {
+            uid: user.uid,
+            email: email
+          });
+
+          console.log("User signed up and data saved:", user);
+
+          login(username , password);
+          
+          SendMessageToUnity("LoginManager", "OnSignUpSuccess", JSON.stringify({
+            userId: user.uid,
+            playerData: JSON.stringify(firebaseData)
+          }));
+        } catch (error) {
+          console.error("Sign-up error:", error.message);
+          let errorMessage = error.message;
+          if (error.code === 'auth/email-already-in-use') {
+            errorMessage = "Email address is already in use.";
+          }
+          SendMessageToUnity("LoginManager", "OnSignUpError", errorMessage);
+        }
+      };
+
+      window.login = async function(username, password) {
+        try {
+          const usernameDoc = await getDoc(doc(db, "usernames", username));
+          if (!usernameDoc.exists()) {
+            console.error("Username not found!");
+            SendMessageToUnity("LoginManager", "OnLoginError", "Username not found.");
+            return;
+          }
+
+          const userData = usernameDoc.data();
+          const email = userData.email;
+          const uid = userData.uid;
+
+          const userCredential = await signInWithEmailAndPassword(auth, email, password);
+          const user = userCredential.user;
+          
+          console.log("User logged in:", user);
+
+          const userDoc = await getDoc(doc(db, "users", user.uid));
+          if (userDoc.exists()) {
+            const playerData = userDoc.data();
+            console.log("User data retrieved:", playerData);
+            SendMessageToUnity("LoginManager", "OnLoginSuccess", JSON.stringify({
+              userId: user.uid,
+              playerData: JSON.stringify(playerData)
+            }));
+          } else {
+            console.error("No user data found!");
+            SendMessageToUnity("LoginManager", "OnLoginError", "User data not found.");
+          }
+        } catch (error) {
+          console.error("Login error:", error.message);
+          SendMessageToUnity("LoginManager", "OnLoginError", error.message);
+        }
+      };
+
+      window.savePlayerData = async function(playerDataJson) {
+        try {
+          const user = auth.currentUser;
+          if (!user) {
+            console.error("No user logged in to save data!");
+            SendMessageToUnity("LoginManager", "OnSaveError", "No user logged in.");
+            return;
+          }
+
+          let data;
+          try {
+            data = JSON.parse(playerDataJson) || { coins: 0, maxScore: 0, highscore: 0, missions: [] };
+            console.log("Parsed playerDataJson for save:", data);
+          } catch (parseError) {
+            console.error("Error parsing playerDataJson for save:", parseError);
+            data = { coins: 0, maxScore: 0, highscore: 0, missions: [] };
+          }
+
+          const firebaseData = {
+            coins: data.coins || 0,
+            maxScore: data.maxScore || 0,
+            highscore: data.highscore || 0,
+            username: user.displayName || "Unknown",
+            missions: Array.isArray(data.missions) ? data.missions : []
+          };
+          console.log("Overwriting Firebase data:", firebaseData);
+
+          await setDoc(doc(db, "users", user.uid), firebaseData);
+
+          console.log("Data saved successfully for user:", user.uid);
+          SendMessageToUnity("LoginManager", "OnSaveSuccess", "Data saved successfully.");
+        } catch (error) {
+          console.error("Save error:", error.message);
+          SendMessageToUnity("LoginManager", "OnSaveError", error.message);
+        }
+      };
+
+      window.fetchLeaderboard = async function() {
+        try {
+          const usersCollection = collection(db, "users");
+          const querySnapshot = await getDocs(usersCollection);
+          let allHighscores = [];
+
+          for (const docSnap of querySnapshot.docs) {
+            const data = docSnap.data();
+            if (data.highscore > 0) {
+              allHighscores.push({
+                name: data.username || "Unknown",
+                score: data.highscore
+              });
+            }
+          }
+
+          allHighscores.sort((a, b) => b.score - a.score);
+          const top10 = allHighscores.slice(0, 10);
+
+          console.log("Top 10 leaderboard:", top10);
+          SendMessageToUnity("LoginManager", "OnLeaderboardFetched", JSON.stringify({
+            leaderboard: top10
+          }));
+        } catch (error) {
+          console.error("Leaderboard fetch error:", error.message);
+          SendMessageToUnity("LoginManager", "OnLeaderboardFetchError", error.message);
+        }
+      };
+
+      window.logout = async function() {
+        try {
+          await signOut(auth);
+          console.log("User signed out successfully");
+          SendMessageToUnity("LoginManager", "OnLogoutSuccess", "Logout successful");
+        } catch (error) {
+          console.error("Logout error:", error.message);
+          SendMessageToUnity("LoginManager", "OnLogoutError", error.message);
+        }
+      };
+    
+      function SendMessageToUnity(gameObject, method, message) {
+        if (window.unityInstance && window.unityInstance.SendMessage) {
+          console.log(`Sending message to Unity: ${gameObject}.${method} - ${message}`);
+          window.unityInstance.SendMessage(gameObject, method, message);
+        } else {
+          console.warn(`Unity instance not ready. Queuing message: ${gameObject}.${method} - ${message}`);
+          setTimeout(() => SendMessageToUnity(gameObject, method, message), 500);
+        }
+      }
+
+      // Trigger login state check after page load
+      // document.addEventListener("DOMContentLoaded", () => {
+      //   setTimeout(checkLoginState, 10000); // Delay to ensure Unity is initialized
+      // });
+
+      /// This is Share code ///
+      window.uploadImageAndShare = function (base64Image, platform) {
+        var formData = new FormData();
+        formData.append("file", base64ToBlob(base64Image));
+        formData.append("upload_preset", "game_screenshot_upload"); // Replace with Cloudinary preset
+  
+        fetch("https://api.cloudinary.com/v1_1/diacotkf0/image/upload", {
+          method: "POST",
+          body: formData
+        })
+          .then(response => response.json())
+          .then(data => {
+            var imageUrl = data.secure_url;
+  
+            // ✅ Cloudinary transformation for proper embedding
+            var transformedImageUrl = `https://res.cloudinary.com/diacotkf0/image/fetch/w_1000,h_1200,c_fit,q_auto,f_png/${encodeURIComponent(imageUrl)}`;
+
+
+            console.log(transformedImageUrl);
+
+            if (platform === "twitter") {
+              var tweetText = "Check out my game screenshot! ";
+              var twitterUrl = "https://twitter.com/intent/tweet?text=" + encodeURIComponent(tweetText) + "&url=" + encodeURIComponent(transformedImageUrl);
+              window.open(twitterUrl, "_blank");
+            } else if (platform === "linkedin") {
+              var linkedInUrl = "https://www.linkedin.com/sharing/share-offsite/?url=" + encodeURIComponent(transformedImageUrl);
+              window.open(linkedInUrl, "_blank");
+            }
+          })
+          .catch(error => console.error("Error uploading to Cloudinary:", error));
+      };
+  
+      window.base64ToBlob = function (base64Image) {
+      // Ensure the Base64 string has no data URL prefix
+      let base64Data = base64Image;
+      if (base64Image.includes(",")) {
+          base64Data = base64Image.split(",")[1]; // Remove `data:image/png;base64,`
+      }
+  
+      try {
+          var byteCharacters = atob(base64Data);
+          var byteNumbers = new Array(byteCharacters.length);
+          for (var i = 0; i < byteCharacters.length; i++) {
+              byteNumbers[i] = byteCharacters.charCodeAt(i);
+          }
+          var byteArray = new Uint8Array(byteNumbers);
+          return new Blob([byteArray], { type: "image/png" });
+      } catch (error) {
+          console.error("Error decoding Base64:", error);
+          return null; // Return null if decoding fails
+      }
+  };
+    </script>
+  </head>
+  <body>
+    <div id="unity-container" class="unity-desktop">
+      <canvas id="unity-canvas" width=1280 height=720 tabindex="-1"></canvas>
+      <div id="unity-loading-bar">
+        <div id="unity-logo"></div>
+        <div id="unity-progress-bar-empty">
+          <div id="unity-progress-bar-full"></div>
+        </div>
+      </div>
+      <div id="unity-warning"> </div>
+      <div id="unity-footer">
+        <div id="unity-logo-title-footer"></div>
+        <div id="unity-fullscreen-button"></div>
+        <div id="unity-build-title">SampleEndlessRunnerGame</div>
+      </div>
+    </div>
+    <script>
+      var canvas = document.querySelector("#unity-canvas");
+
+      function unityShowBanner(msg, type) {
+        var warningBanner = document.querySelector("#unity-warning");
+        function updateBannerVisibility() {
+          warningBanner.style.display = warningBanner.children.length ? 'block' : 'none';
+        }
+        var div = document.createElement('div');
+        div.innerHTML = msg;
+        warningBanner.appendChild(div);
+        if (type == 'error') div.style = 'background: red; padding: 10px;';
+        else {
+          if (type == 'warning') div.style = 'background: yellow; padding: 10px;';
+          setTimeout(function() {
+            warningBanner.removeChild(div);
+            updateBannerVisibility();
+          }, 5000);
+        }
+        updateBannerVisibility();
+      }
+
+      var buildUrl = "Build";
+      var loaderUrl = buildUrl + "/Cyera.loader.js";
+      var config = {
+        arguments: [],
+        dataUrl: buildUrl + "/Cyera.data.gz",
+        frameworkUrl: buildUrl + "/Cyera.framework.js.gz",
+        codeUrl: buildUrl + "/Cyera.wasm.gz",
+        streamingAssetsUrl: "StreamingAssets",
+        companyName: "DefaultCompany",
+        productName: "SampleEndlessRunnerGame",
+        productVersion: "1.0",
+        showBanner: unityShowBanner,
+      };
+
+      if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
+        var meta = document.createElement('meta');
+        meta.name = 'viewport';
+        meta.content = 'width=device-width, height=device-height, initial-scale=1.0, user-scalable=no, shrink-to-fit=yes';
+        document.getElementsByTagName('head')[0].appendChild(meta);
+        document.querySelector("#unity-container").className = "unity-mobile";
+        canvas.className = "unity-mobile";
+      } else {
+        canvas.style.width = "1280px";
+        canvas.style.height = "720px";
+      }
+
+      document.querySelector("#unity-loading-bar").style.display = "block";
+
+      var script = document.createElement("script");
+      script.src = loaderUrl;
+      script.onload = () => {
+        createUnityInstance(canvas, config, (progress) => {
+          document.querySelector("#unity-progress-bar-full").style.width = 100 * progress + "%";
+        }).then((instance) => {
+          document.querySelector("#unity-loading-bar").style.display = "none";
+          window.unityInstance = instance;
+          console.log("Unity instance loaded:", window.unityInstance);
+          document.querySelector("#unity-fullscreen-button").onclick = () => {
+            instance.SetFullscreen(1);
+          };
+          // Check login state again after Unity is fully loaded
+          checkLoginState();
+        }).catch((message) => {
+          alert(message);
+        });
+      };
+
+      document.body.appendChild(script);
+    </script>
+  </body>
+</html>
